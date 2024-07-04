@@ -1,0 +1,598 @@
+---
+title: "Legendplex from template"
+author: "Sidney van der Zande"
+date: "`26-06-2024`"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = F, collapse=T)
+```
+
+## Notes
+
+This is a script meant to analyse Legendplex for the TLS experiments, using the accompanied Legendplex input template excel file. It only needs the tumour name, the path to the Legendplex file and an output directory to store the results in. The function outputs PDTF responder status for all fragments as well as all values it needs to calculate these scores such that they can be used later for other purposes.
+
+The following section is to analyse one tumour at a time. If you want to analyse multiple tumours at a time, run the 'Main function' section and skip straight to the 'Batch input mode' section.
+
+## Input
+
+```{r Input data}
+#Change the tumour name here
+tumour_name <- "LU052"
+
+#only use if the experiment number is important
+#experiment <- NA
+experiment = "TLS014"
+
+#Give the FULL path to the Legendplex file
+file_path <- "~/Documents/Experiments/TLS/LP065-LU066-LU052(2)/Final overview LP065.xlsx"
+
+#In which directory should the output be stored?
+output_dir <- "~/Documents/Experiments/TLS/LP065-LU066-LU052(2)/"
+
+#For some functions, you will need this file
+source("~/Documents/R scripts/Functions.R")
+```
+
+## Main function
+
+If you have run this code block once, then you do not need to run it again and can just go to the 'Output' section directly (although running it again will not change anything)
+
+```{r Main function: just run and do not change anything}
+#function is defined here
+analyze_legendplex <- function(tumour_name, file_path, batch_mode = F, experiment = NA){
+  suppressMessages(require(readxl))
+  
+  #read in the file
+  suppressMessages(file <- as.data.frame(read_excel(file_path, sheet = 2)))
+  
+  #failsafe for incorrect column names/numbers
+  if(ncol(file) != 28){
+    stop("Incorrect excel template")
+  } 
+  
+  
+  
+  #set column names
+  colnames(file) <- c("well", "sample", "IL-5", "IL-13", "IL-2", "IL-6", "IL-9", "IL-10", "IFN-γ", "TNF-α",
+                      "IL-17A", "IL-17F", "IL-4", "IL-22", "empty", "IL-8", "CXCL10", "CCL11", "CCL17", "CCL2", "CCL5",
+                      "CCL3", "CXCL9", "CXCL5", "CCL20", "CXCL1", "CXCL11", "CCL4")
+  
+  #Formatting:
+  file$empty <- NULL
+  file <- apply(file, 2, function(y) gsub("NA", NA, y)) #set excluded samples to NA
+  file <- as.data.frame(file)
+  file <- file[!is.na(file$sample),]
+  file[,-c(1:2)] <- apply(file[,-c(1:2)], 2, function(y) as.numeric(y))
+  
+  
+  #failsafe if PDTF cytokines are missing
+  if(!(all(c("IL-10", "IFN-γ", "CXCL10", "CCL5", "CCL17", "CXCL5", "CXCL1", "CXCL11", "CXCL9", "CCL4", "CCL20") %in% colnames(file)))){
+    missing_col <- colnames(file)[!(c("IL-10", "IFN-γ", "CXCL10", "CCL5", "CCL17", "CXCL5", "CXCL1", "CXCL11", "CXCL9", "CCL4", "CCL20") %in% colnames(file))]
+    stop(paste0("Error: missing the following cytokines: ", missing_col))
+  }
+  
+  #Grab the samples that correspond to the tumour name
+  if(any(grepl(tumour_name, file$sample))){
+    sample <- file[grepl(tumour_name, file$sample),]
+  } else{
+    stop("That tumour was not found in this file.")
+  }
+  
+  if(!is.na(experiment)){
+    sample <- sample[grepl(experiment, sample$sample),]
+  }
+  
+  if(batch_mode == F){
+    print(paste0("Results for tumour ", tumour_name))
+    print(paste0(nrow(sample), " samples were found for that tumour."))
+  }
+  
+  #Split into unstim and aPD1
+  unstim <- sample[grepl("unstim", sample$sample, ignore.case = T),]
+  rownames(unstim) <- unstim$sample
+  unstim$sample <- NULL
+  unstim$well <- NULL
+  
+  PD1 <- sample[grepl("aPD1", sample$sample, ignore.case = T),]
+  PD1 <- PD1[!grepl("IFN", PD1$sample, ignore.case = F),] #exclude the aPD1+aIFNyR1 condition
+  if(nrow(PD1) != 0){
+    rownames(PD1) <- PD1$sample
+    PD1 <- PD1[,!(colnames(PD1) %in% c("sample", "well"))]
+    PD1_present <- T
+  } else{
+    PD1_present <- F
+  }
+  
+  PD1_IFNR <- sample[grepl("aPD1\\+aIFNyR1", sample$sample, ignore.case = F),]
+  if(nrow(PD1_IFNR) != 0){
+    rownames(PD1_IFNR) <- PD1_IFNR$sample
+    PD1_IFNR <- PD1_IFNR[,!(colnames(PD1_IFNR) %in% c("sample", "well"))]
+    PD1_IFNR_present <- T
+  } else{
+    PD1_IFNR_present <- F
+  }
+  
+  hrIFNy <- sample[grepl("hrIFNy", sample$sample, ignore.case = F),]
+  if(nrow(hrIFNy) != 0){
+    rownames(hrIFNy) <- hrIFNy$sample
+    hrIFNy <- hrIFNy[,!(colnames(hrIFNy) %in% c("sample", "well"))]
+    hrIFNy_present <- T
+  } else{
+    hrIFNy_present <- F
+  }
+  
+  extra_conditions <- F
+  
+  if(grepl("LP060", file_path)){ #in LP060, samples were included where RN440-15 and RN440-16 conditions exist
+    RN440_15 <- sample[grepl("RN440-15", sample$sample, ignore.case = F),]
+    RN440_16 <- sample[grepl("RN440-16", sample$sample, ignore.case = F),]
+    
+    rownames(RN440_15) <- RN440_15$sample
+    RN440_15 <- RN440_15[,!(colnames(RN440_15) %in% c("sample", "well"))]
+    
+    rownames(RN440_16) <- RN440_16$sample
+    RN440_16 <- RN440_16[,!(colnames(RN440_16) %in% c("sample", "well"))]
+    extra_conditions <- T
+  }
+  
+  #get the blanco values
+  blank <- file[grepl("Standard 0pg/ml", file$sample, ignore.case = T),]
+  blank <- blank[,!(colnames(blank) %in% c("sample", "well"))]
+  
+  #average the values
+  blank_avg <- colMeans(blank)
+  
+  #save uncorrected values
+  uncorrected <- rbind(unstim, PD1, PD1_IFNR, hrIFNy)
+  if(extra_conditions == T){
+    uncorrected <- rbind(uncorrected, RN440_15, RN440_16)
+  }
+  uncorrected <- rbind(uncorrected, blank_avg)
+  rownames(uncorrected)[length(rownames(uncorrected))] <- "Blank average" #change the name of the blank
+  
+  #correct for blancos in raw values
+  unstim <- sweep(unstim, 2, blank_avg, "-")
+  if(PD1_present == T){
+    suppressWarnings(PD1 <- sweep(PD1, 2, blank_avg, "-"))
+  }
+  if(PD1_IFNR_present == T){
+    suppressWarnings(PD1_IFNR <- sweep(PD1_IFNR, 2, blank_avg, "-"))
+  }
+  if(hrIFNy_present == T){
+    suppressWarnings(hrIFNy <- sweep(hrIFNy, 2, blank_avg, "-"))
+  }
+  
+  if(extra_conditions == T){
+    suppressWarnings(RN440_15 <- sweep(RN440_15, 2, blank_avg, "-"))
+    suppressWarnings(RN440_16 <- sweep(RN440_16, 2, blank_avg, "-"))
+    
+    RN440_15[RN440_15 < 0] <- 0
+    RN440_15_avg <- colMeans(RN440_15)
+    
+    RN440_16[RN440_16 < 0] <- 0
+    RN440_16_avg <- colMeans(RN440_16)
+    
+  }
+  #set all negative values to zero
+  unstim[unstim < 0] <- 0
+  PD1[PD1 < 0] <- 0
+  PD1_IFNR[PD1_IFNR < 0] <- 0
+  hrIFNy[hrIFNy < 0] <- 0
+  
+  #calculate averages for stim and unstim
+  unstim_avg <- colMeans(unstim)
+  PD1_avg <- colMeans(PD1)
+  PD1_IFNR_avg <- colMeans(PD1_IFNR)
+  hrIFNy_avg <- colMeans(hrIFNy)
+  
+  #calculate the PD1 delta (PD1 - unstim average)
+  if(PD1_present == T){
+    suppressWarnings(PD1_delta <-  sweep(PD1, 2, unstim_avg, "-"))
+  }
+  
+  #calculate unstim deltas (unstim - unstim average)
+  unstim_delta <- sweep(unstim, 2, unstim_avg, "-")
+  
+  #calculate the aPD1+aIFNyR1 deltas (aPD1+aIFNyR1 - unstim average)
+  if(PD1_IFNR_present == T){
+    suppressWarnings(PD1_IFNR_delta <- sweep(PD1_IFNR, 2, unstim_avg, "-"))
+  }
+  
+  #calculate the hrIFNy deltas (hrIFNy - unstim average)
+  if(hrIFNy_present == T){
+    suppressWarnings(hrIFNy_delta <- sweep(hrIFNy, 2, unstim_avg, "-"))
+  }
+  
+  #calculate the RN440-15 and RN440-16 (RN440-15/16 - unstim average)
+  if(extra_conditions == T){
+    suppressWarnings(RN440_15_delta <- sweep(RN440_15, 2, unstim_avg, "-"))
+    suppressWarnings(RN440_16_delta <- sweep(RN440_16, 2, unstim_avg, "-"))
+  }
+  
+  #calculate PDTF scores (only if PD1 is present, though)
+  if(PD1_present == T){
+    PDTF_matrix_PD1 <- PD1_delta[,c("IL-10", "IFN-γ", "CXCL10", "CCL5", "CCL17", "CXCL5", "CXCL1", "CXCL11", "CXCL9", "CCL4", "CCL20")]
+    PDTF_matrix_PD1[,1] <- ifelse(PDTF_matrix_PD1[,1] > 2.052, yes = 1, no = 0)
+    PDTF_matrix_PD1[,2] <- ifelse(PDTF_matrix_PD1[,2] > 2.622, yes = 2, no = 0)
+    PDTF_matrix_PD1[,3] <- ifelse(PDTF_matrix_PD1[,3] > 41.67, yes = 2, no = 0)
+    PDTF_matrix_PD1[,4] <- ifelse(PDTF_matrix_PD1[,4] > 3.702, yes = 1, no = 0)
+    PDTF_matrix_PD1[,5] <- ifelse(PDTF_matrix_PD1[,5] > 0.5597, yes = 2, no = 0)
+    PDTF_matrix_PD1[,6] <- ifelse(PDTF_matrix_PD1[,6] > 395.3, yes = 1, no = 0)
+    PDTF_matrix_PD1[,7] <- ifelse(PDTF_matrix_PD1[,7] > 482, yes = 2, no = 0)
+    PDTF_matrix_PD1[,8] <- ifelse(PDTF_matrix_PD1[,8] > 0.3441, yes = 1, no = 0)
+    PDTF_matrix_PD1[,9] <- ifelse(PDTF_matrix_PD1[,9] > 18.82, yes = 1, no = 0)
+    PDTF_matrix_PD1[,10] <- ifelse(PDTF_matrix_PD1[,10] > 2.512, yes = 1, no = 0)
+    PDTF_matrix_PD1[,11] <- ifelse(PDTF_matrix_PD1[,11] > 6.611, yes = 1, no = 0)
+    
+    #calculate the cumulative score, percentage and final responder status
+    PDTF_matrix_PD1$total_score <- rowSums(PDTF_matrix_PD1)
+    PDTF_matrix_PD1$percentage <- (PDTF_matrix_PD1$total_score/15)*100
+    
+    PDTF_matrix_PD1$PDTF_response <- ifelse(PDTF_matrix_PD1$percentage >= 40, yes = "PDTF-R", no = "PDTF-NR")
+    PDTF_matrix_PD1$PDTF_response[PDTF_matrix_PD1$percentage >= 30 & PDTF_matrix_PD1$PDTF_response == "PDTF-NR"] <- "PDTF-BR"
+    
+    #calculate PDTF scores at baseline
+    PDTF_matrix_unstim <- unstim_delta[,c("IL-10", "IFN-γ", "CXCL10", "CCL5", "CCL17", "CXCL5", "CXCL1", "CXCL11", "CXCL9", "CCL4", "CCL20")]
+    PDTF_matrix_unstim[,1] <- ifelse(PDTF_matrix_unstim[,1] > 2.052, yes = 1, no = 0)
+    PDTF_matrix_unstim[,2] <- ifelse(PDTF_matrix_unstim[,2] > 2.622, yes = 2, no = 0)
+    PDTF_matrix_unstim[,3] <- ifelse(PDTF_matrix_unstim[,3] > 41.67, yes = 2, no = 0)
+    PDTF_matrix_unstim[,4] <- ifelse(PDTF_matrix_unstim[,4] > 3.702, yes = 1, no = 0)
+    PDTF_matrix_unstim[,5] <- ifelse(PDTF_matrix_unstim[,5] > 0.5597, yes = 2, no = 0)
+    PDTF_matrix_unstim[,6] <- ifelse(PDTF_matrix_unstim[,6] > 395.3, yes = 1, no = 0)
+    PDTF_matrix_unstim[,7] <- ifelse(PDTF_matrix_unstim[,7] > 482, yes = 2, no = 0)
+    PDTF_matrix_unstim[,8] <- ifelse(PDTF_matrix_unstim[,8] > 0.3441, yes = 1, no = 0)
+    PDTF_matrix_unstim[,9] <- ifelse(PDTF_matrix_unstim[,9] > 18.82, yes = 1, no = 0)
+    PDTF_matrix_unstim[,10] <- ifelse(PDTF_matrix_unstim[,10] > 2.512, yes = 1, no = 0)
+    PDTF_matrix_unstim[,11] <- ifelse(PDTF_matrix_unstim[,11] > 6.611, yes = 1, no = 0)
+    
+    #calculate the cumulative score, percentage and final responder status at baseline
+    PDTF_matrix_unstim$total_score <- rowSums(PDTF_matrix_unstim)
+    PDTF_matrix_unstim$percentage <- (PDTF_matrix_unstim$total_score/15)*100
+    
+    PDTF_matrix_unstim$PDTF_response <- ifelse(PDTF_matrix_unstim$percentage >= 40, yes = "PDTF-R", no = "PDTF-NR")
+    PDTF_matrix_unstim$PDTF_response[PDTF_matrix_unstim$percentage >= 30 & PDTF_matrix_unstim$PDTF_response == "PDTF-NR"] <- "PDTF-BR"
+    
+    #calculate overall deltas
+    overall_delta_PD1<- PD1_avg - unstim_avg
+    
+    #only keep cytokines we need
+    responder_delta <- overall_delta_PD1[names(overall_delta_PD1) %in% c("IL-10", "IFN-γ", "CXCL10", "CCL5", "CCL17", "CXCL5", "CXCL1", "CXCL11", "CXCL9", "CCL4", "CCL20")]
+    #correct order
+    responder_delta <- responder_delta[order(factor(names(responder_delta), levels = c("IL-10", "IFN-γ", "CXCL10", "CCL5", "CCL17", "CXCL5", "CXCL1", "CXCL11", "CXCL9", "CCL4", "CCL20")))]
+    
+    #calculate overall responder scores
+    responder_delta[1] <- ifelse(responder_delta[1] > 2.052, yes = 1, no = 0)
+    responder_delta[2] <- ifelse(responder_delta[2] > 2.622, yes = 2, no = 0)
+    responder_delta[3] <- ifelse(responder_delta[3] > 41.67, yes = 2, no = 0)
+    responder_delta[4] <- ifelse(responder_delta[4] > 3.702, yes = 1, no = 0)
+    responder_delta[5] <- ifelse(responder_delta[5] > 0.5597, yes = 2, no = 0)
+    responder_delta[6] <- ifelse(responder_delta[6] > 395.3, yes = 1, no = 0)
+    responder_delta[7] <- ifelse(responder_delta[7] > 482, yes = 2, no = 0)
+    responder_delta[8] <- ifelse(responder_delta[8] > 0.3441, yes = 1, no = 0)
+    responder_delta[9] <- ifelse(responder_delta[9] > 18.82, yes = 1, no = 0)
+    responder_delta[10] <- ifelse(responder_delta[10] > 2.512, yes = 1, no = 0)
+    responder_delta[11] <- ifelse(responder_delta[11] > 6.611, yes = 1, no = 0)
+    
+    #Sum the scores, calculate percentages and give overall responder status
+    responder <- ((sum(responder_delta))/15)*100
+    
+    if(responder >= 40){
+      responder_output <- "PDTF-R"
+    } else if(responder >= 30){
+      responder_output <- "PDTF-BR"
+    } else{
+      responder_output <- "PDTF-NR"
+    }
+    
+    responder <- round(responder, 1)
+    
+  }
+  
+  #calculate the other overall deltas
+  if(PD1_IFNR_present == T){
+    overall_delta_PD1_IFNR<- PD1_IFNR_avg - unstim_avg
+  }
+  if(hrIFNy_present == T){
+    overall_delta_hrIFNy<- hrIFNy_avg - unstim_avg
+  }
+  
+  if(extra_conditions == T){
+    overall_delta_RN440_15 <- RN440_15_avg - unstim_avg
+    overall_delta_RN440_16 <- RN440_16_avg - unstim_avg
+  }
+  
+  #return table with corrected cytokine values
+  suppressWarnings(corrected_values <- rbind(unstim,PD1,PD1_IFNR,hrIFNy,unstim_avg,PD1_avg,PD1_IFNR_avg,hrIFNy_avg))
+  if(PD1_present == T & PD1_IFNR_present ==F & hrIFNy_present == F & extra_conditions == F){
+    corrected_values <- rbind(unstim,PD1,unstim_avg,PD1_avg)
+    rownames(corrected_values)[length(rownames(corrected_values))-1] <- "unstim average"
+    rownames(corrected_values)[length(rownames(corrected_values))] <- "aPD1 average"
+    
+    deltas <- rbind(unstim_delta, PD1_delta, overall_delta_PD1)
+    rownames(deltas)[length(rownames(deltas))] <- "overall delta aPD1"
+    
+  } else if(PD1_present == T & PD1_IFNR_present ==T & hrIFNy_present == F & extra_conditions == F){
+    corrected_values <- rbind(unstim,PD1,PD1_IFNR,unstim_avg,PD1_avg,PD1_IFNR_avg)
+    rownames(corrected_values)[length(rownames(corrected_values))-2] <- "unstim average"
+    rownames(corrected_values)[length(rownames(corrected_values))-1] <- "aPD1 average"
+    rownames(corrected_values)[length(rownames(corrected_values))] <- "aPD1_aIFNyR1 average"
+    
+    deltas <- rbind(unstim_delta, PD1_delta, PD1_IFNR_delta, overall_delta_PD1,overall_delta_PD1_IFNR)
+    rownames(deltas)[length(rownames(deltas))-1] <- "overall delta aPD1"
+    rownames(deltas)[length(rownames(deltas))] <- "overall delta aPD1_aIFNR1"
+    
+  } else if(PD1_present == T & PD1_IFNR_present ==F & hrIFNy_present == T & extra_conditions == F){
+    corrected_values <- rbind(unstim,PD1,hrIFNy,unstim_avg,PD1_avg,hrIFNy_avg)
+    rownames(corrected_values)[length(rownames(corrected_values))-2] <- "unstim average"
+    rownames(corrected_values)[length(rownames(corrected_values))-1] <- "aPD1 average"
+    rownames(corrected_values)[length(rownames(corrected_values))] <- "hrIFNy average"
+    
+    deltas <- rbind(unstim_delta, PD1_delta, hrIFNy_delta, overall_delta_PD1,overall_delta_hrIFNy)
+    rownames(deltas)[length(rownames(deltas))-1] <- "overall delta aPD1"
+    rownames(deltas)[length(rownames(deltas))] <- "overall delta hrIFNy"
+    
+  } else if(PD1_present == T & PD1_IFNR_present ==T & hrIFNy_present == T & extra_conditions == F){
+    corrected_values <- rbind(unstim,PD1,PD1_IFNR,hrIFNy,unstim_avg,PD1_avg,PD1_IFNR_avg,hrIFNy_avg)
+    rownames(corrected_values)[length(rownames(corrected_values))-3] <- "unstim average"
+    rownames(corrected_values)[length(rownames(corrected_values))-2] <- "aPD1 average"
+    rownames(corrected_values)[length(rownames(corrected_values))-1] <- "aPD1_aIFNyR1 average"
+    rownames(corrected_values)[length(rownames(corrected_values))] <- "hrIFNy average"
+    
+    deltas <- rbind(unstim_delta, PD1_delta, PD1_IFNR_delta, hrIFNy_delta, overall_delta_PD1,overall_delta_PD1_IFNR,overall_delta_hrIFNy)
+    rownames(deltas)[length(rownames(deltas))-2] <- "overall delta aPD1"
+    rownames(deltas)[length(rownames(deltas))-1] <- "overall delta aPD1_aIFNR1"
+    rownames(deltas)[length(rownames(deltas))] <- "overall delta hrIFNy"
+    
+  } else if(PD1_present == F & PD1_IFNR_present ==F & hrIFNy_present == F & extra_conditions == F){
+    corrected_values <- rbind(unstim,unstim_avg)
+    rownames(corrected_values)[length(rownames(corrected_values))] <- "unstim average"
+    
+    deltas <- rbind(unstim_delta)
+    
+  } else if(PD1_present == F & PD1_IFNR_present ==T & hrIFNy_present == T & extra_conditions == F){
+    corrected_values <- rbind(unstim,PD1_IFNR,hrIFNy,unstim_avg,PD1_IFNR_avg,hrIFNy_avg)
+    rownames(corrected_values)[length(rownames(corrected_values))-2] <- "unstim average"
+    rownames(corrected_values)[length(rownames(corrected_values))-1] <- "aPD1_aIFNyR1 average"
+    rownames(corrected_values)[length(rownames(corrected_values))] <- "hrIFNy average"
+    
+    deltas <- rbind(unstim_delta, PD1_IFNR_delta, hrIFNy_delta, overall_delta_PD1_IFNR,overall_delta_hrIFNy)
+    rownames(deltas)[length(rownames(deltas))-1] <- "overall delta aPD1_aIFNR1"
+    rownames(deltas)[length(rownames(deltas))] <- "overall delta hrIFNy"
+    
+  } else if(PD1_present == F & PD1_IFNR_present ==T & hrIFNy_present == F & extra_conditions == F){
+    corrected_values <- rbind(unstim,PD1_IFNR,unstim_avg,PD1_IFNR_avg)
+    rownames(corrected_values)[length(rownames(corrected_values))-1] <- "unstim average"
+    rownames(corrected_values)[length(rownames(corrected_values))] <- "aPD1_aIFNyR1 average"
+    
+    deltas <- rbind(unstim_delta, PD1_IFNR_delta, overall_delta_PD1_IFNR)
+    rownames(deltas)[length(rownames(deltas))] <- "overall delta aPD1_aIFNR1"
+    
+  } else if(PD1_present == F & PD1_IFNR_present ==F & hrIFNy_present == T & extra_conditions == F){
+    corrected_values <- rbind(unstim,hrIFNy,unstim_avg,hrIFNy_avg)
+    rownames(corrected_values)[length(rownames(corrected_values))-1] <- "unstim average"
+    rownames(corrected_values)[length(rownames(corrected_values))] <- "hrIFNy average"
+    
+    deltas <- rbind(unstim_delta, hrIFNy_delta, overall_delta_hrIFNy)
+    rownames(deltas)[length(rownames(deltas))] <- "overall delta hrIFNy"
+  }
+  
+  #add RN440-15 and RN440-16 if applicable
+  if(extra_conditions == T){ #extra conditions only exist if other 4 conditions exist too
+    corrected_values <- rbind(unstim,PD1,PD1_IFNR,hrIFNy,RN440_15,RN440_16,unstim_avg,PD1_avg,PD1_IFNR_avg,hrIFNy_avg,RN440_15_avg,RN440_16_avg)
+    rownames(corrected_values)[length(rownames(corrected_values))-5] <- "unstim average"
+    rownames(corrected_values)[length(rownames(corrected_values))-4] <- "aPD1 average"
+    rownames(corrected_values)[length(rownames(corrected_values))-3] <- "aPD1_aIFNyR1 average"
+    rownames(corrected_values)[length(rownames(corrected_values))-2] <- "hrIFNy average"
+    rownames(corrected_values)[length(rownames(corrected_values))-1] <- "RN440-15 average"
+    rownames(corrected_values)[length(rownames(corrected_values))] <- "RN440-16 average"
+    
+    deltas <- rbind(unstim_delta, PD1_delta, PD1_IFNR_delta, hrIFNy_delta, RN440_15_delta, RN440_16_delta, overall_delta_PD1,overall_delta_PD1_IFNR,overall_delta_hrIFNy,overall_delta_RN440_15,overall_delta_RN440_16)
+    rownames(deltas)[length(rownames(deltas))-4] <- "overall delta aPD1"
+    rownames(deltas)[length(rownames(deltas))-3] <- "overall delta aPD1_aIFNR1"
+    rownames(deltas)[length(rownames(deltas))-2] <- "overall delta hrIFNy"
+    rownames(deltas)[length(rownames(deltas))-1] <- "overall delta RN440-15"
+    rownames(deltas)[length(rownames(deltas))] <- "overall delta RN440-16"
+    
+  }
+  
+  
+  #show responder status for individual fragments
+  if(PD1_present == T){
+    PDTF_matrix_full <- rbind(PDTF_matrix_unstim, PDTF_matrix_PD1)
+    fragment_response <- data.frame(fragment = rownames(PDTF_matrix_full), response= PDTF_matrix_full$PDTF_response, percentage = PDTF_matrix_full$percentage)
+    fragment_response$percentage <- round(fragment_response$percentage, 1)
+    responder_total <- c(as.character(responder_delta), sum(responder_delta), as.character(responder), responder_output)
+    PDTF_matrix_full <- rbind(PDTF_matrix_full, responder_total)
+    rownames(PDTF_matrix_full)[length(rownames(PDTF_matrix_full))] <- "Overall"
+    
+    #produce output
+    output <- list(uncorrected,corrected_values,deltas,PDTF_matrix_full)
+    names(output) <- c("uncorrected values","corrected values","deltas","PDTF scores")
+    
+  } else{
+    output <- list(uncorrected,corrected_values,deltas)
+    names(output) <- c("uncorrected values","corrected values","deltas")
+  }
+  
+  #Give output report:
+  if(PD1_present == T){
+    if(batch_mode == F){
+      print("The fragments were classified as follows:")
+      print(fragment_response)
+    }
+    
+    print(paste0(tumour_name, " was overall classified as: ", responder_output, " (", responder, "%)"))
+  }
+  
+  if(batch_mode == F){
+    print("All values that were used for calculations can be found in the output of this function.")
+  }
+  
+  return(output)
+  
+}
+```
+
+## Output
+
+```{r Run the function, paged.print=FALSE}
+#use the function, no changes are needed
+output <- analyze_legendplex(file_path = file_path, tumour_name = tumour_name, experiment = experiment, batch_mode = F)
+```
+```{r Store the result}
+#An excel file with the result (named the same as your tumour name) will be written to your output directory (or any other directory if you change the filename)
+library(openxlsx)
+write.xlsx(output, file=paste0(output_dir, tumour_name, "_", experiment, ".xlsx"), rowNames=T)
+```
+
+```{r Normalisation}
+#Alternatively, you can process the file including normalisation of all values above or below the detection range.
+#There are two ways to do this:
+# normalisation = "windsor", which sets all values above the detectionlimit to he highest value below the detection limit and vice versa.
+# normalisation = "percentile", which sets all values above the detection limit to the 99th percentile and vice versa.
+source("~/Documents/R scripts/Functions.R")
+
+LOD_file <- "~/Documents/Experiments/TLS/LP065-LU066-LU052(2)/LOD_LP065.xlsx"
+
+output_normalised <- analyze_legendplex_v2(file_path = file_path, tumour_name = tumour_name, experiment = experiment, batch_mode = F, normalisation = "windsor", LOD_file = LOD_file)
+
+library(openxlsx)
+write.xlsx(output_normalised, file=paste0(output_dir, tumour_name, "_normalised_windsor.xlsx"), rowNames=T)
+
+```
+
+
+
+## Batch input mode
+
+If you want to analyse multiple samples at a time (given that they appear in the same Legendplex file) then you can use this code chunk. It will not show PDTF status per fragment, only per tumour. The results are stored in the same way as the analysis per individual tumour above.
+
+RUN THE 'Main function' SECTION BEFORE PROCEEDING
+
+```{r Batch input}
+#Change the tumour names here
+tumour_name <- c("LU088", "LU091", "LU023") #if the same tumour from two experiments, input the tumour name once
+
+#only fill this in if you use tumours from multiple experiments
+#experiment <- c("TLS013", "TLS015")
+
+#Give the FULL path to the Legendplex file, this file needs to contain all tumours entered above
+file_path <- "~/Documents/Experiments/TLS/LP063-LU088-LU091-LU023/Final overview LP063.xlsx"
+
+#In which directory should the output be stored?
+output_dir <- "~/Documents/Experiments/TLS/LP063-LU088-LU091-LU023/"
+
+#If performing normalisation, specify the LOD file here:
+LOD_file <- "~/Documents/Experiments/TLS/LP063-LU088-LU091-LU023/LOD_LP063.xlsx"
+```
+
+```{r Run function}
+#No changes needed, just run as is
+library(openxlsx)
+
+for(i in tumour_name){
+  output <- analyze_legendplex(tumour_name = i, file_path = file_path, batch_mode = T)
+  
+write.xlsx(output, file=paste0(output_dir,i,".xlsx"), rowNames=T)
+}
+```
+
+
+```{r Multiple experiments}
+#Alternatively, if doing the same tumour from multiple experiments:
+for(i in experiment){
+  output <- analyze_legendplex(tumour_name = tumour_name, file_path = file_path, batch_mode = T, experiment = i)
+  
+write.xlsx(output, file=paste0(output_dir,i, tumour_name, ".xlsx"), rowNames=T)
+}
+```
+
+```{r Batch mode normalisation}
+#Alternatively, if normalisation needs to be applied:
+source("~/Documents/R scripts/Functions.R")
+
+for(i in tumour_name){
+  output_normalised <- analyze_legendplex_v2(tumour_name = i, file_path = file_path, batch_mode = T, experiment = NA, normalisation = "windsor", LOD_file = LOD_file)
+  
+write.xlsx(output_normalised, file=paste0(output_dir,i,"_normalised_windsor.xlsx"), rowNames=T)
+}
+```
+
+##Quality controls
+Quality controls based on concentrations and MFIs have been moved to the Functions.R folder and used in the 'legendplex all tumours.R' file. Summon them from here:
+```{r Quality control}
+source("~/Documents/R scripts/Functions.R")
+cat("Concentration:", "\n")
+conc_qc <- legendplex_qc_concentration("~/Documents/Experiments/TLS/LP060-RW_PK_01042024/LU083.xlsx") #based on concentrations
+conc_qc
+
+cat("\n","MFI:","\n")
+MFI_qc <- legendplex_qc_MFI("~/Documents/Experiments/TLS/LP060-RW_PK_01042024/LP060_MFI.xlsx", experiment = "TLS011", tumour_name = "LU083")
+MFI_qc
+```
+
+##Plotting
+```{r Make heatmaps}
+#Generate a heatmap of z-scores per cytokine
+library(pheatmap)
+
+heatmap_list <- list()
+experiment <- c("TLS014", "TLS016", "TLS016")
+
+#prepare TLS status
+TLS_status <- read.csv("~/Documents/Analyses/TLS/fragment_table.csv")
+TLS_status$X <- NULL
+
+
+for(i in tumour_name){
+  
+  index <- which(tumour_name == i)
+  
+  #read in TLS status
+  TLS_status_i <- TLS_status[TLS_status$tumour == i & TLS_status$experiment == experiment[[index]],]
+  TLS_status_i$heatmap <- paste0(TLS_status_i$tumour, " ", TLS_status_i$condition, " fragment " ,TLS_status_i$fragment)
+  
+  #read in the deltas
+file_name <- paste0(output_dir,"/", i,".xlsx")
+deltas <- read.xlsx(file_name, sheet = 3, colNames = T, rowNames = T) #sheet 3 contains delta values
+deltas <- deltas[!grepl("overall",rownames(deltas)),]
+values <- read.xlsx(file_name, sheet = 2, colNames = T, rowNames = T) #sheet 2 contains corrected values
+average <- values[c("unstim average"),]
+values <- values[!grepl("average", rownames(values)),]
+  
+  #z-score is (value - average)/standard deviation. (is this the delta or is the average per condition?)
+colSD <- apply(values, 2, sd)
+colMean <- colMeans(values)
+z_scores <- sweep(values, 2, colMean, "-") #subtract means per column
+z_scores <- sweep(z_scores, 2, colSD, "/") #divide by standard deviation per column
+z_scores <- t(z_scores)
+
+
+#exclude IFN-y as it might mess up the heatmap
+#norm_mat <- norm_mat[rownames(norm_mat) != "IFN-γ",]
+
+#add TLS status
+colnames(z_scores) <- gsub("Unstim","unstim", colnames(z_scores))
+TLS_status_i$heatmap <- gsub("aIFNyR1\\+aPD1", "aPD1+aIFNyR1", TLS_status_i$heatmap)
+rownames(TLS_status_i) <- TLS_status_i$heatmap
+TLS_status_i <- TLS_status_i[,c("heatmap","segment","cell_threshold_100")]
+TLS_status_i <- TLS_status_i[rownames(TLS_status_i) %in% colnames(z_scores),] #missing LU023 fragment 6
+TLS_status_i <- TLS_status_i[order(match(rownames(TLS_status_i), colnames(z_scores))),]
+#not all fragments are in TLS data bc I could likely not find them during gating 
+TLS_status_i$heatmap <- NULL
+
+#set colours (TLS status)
+cols <- list(segment = c(tumour_bed = "#99CCFF", intermediate = "#CC9FFF", TLS = "#99FFCC"), segment = c(YES = "pink", NO = "grey"))
+
+#heatmap
+heatmap <- suppressWarnings(pheatmap(z_scores, annotation_colors = cols, annotation_col = TLS_status_i))  
+
+#save the heatmap
+heatmap_list[[length(heatmap_list)+1]] <- heatmap
+names(heatmap_list)[[length(heatmap_list)]] <- i
+
+}
+
+```

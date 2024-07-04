@@ -1,0 +1,379 @@
+---
+title: "Legendplex"
+author: "Sidney van der Zande"
+date: "`08-03-2024`"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = F, collapse=T)
+```
+
+## Notes
+
+This is a script meant to analyse Legendplex for two conditions: unstim and aPD1. It only needs the tumour name, the path to the Legendplex file and an output directory to store the results in. The function outputs PDTF responder status for all fragments as well as all values it needs to calculate these scores such that they can be used later for other purposes.
+
+The following section is to analyse one tumour at a time. If you want to analyse multiple tumours at a time, run the 'Main function' section and skip straight to the 'Batch input mode' section.
+
+The function takes the values from Sheet 1 of the Excel file. If this is not the correct input, change the Excel file or change the line in the function from:
+
+*suppressMessages(file \<- as.data.frame(read_excel(file_path, sheet = 1)))*
+
+to:
+
+*suppressMessages(file \<- as.data.frame(read_excel(file_path, sheet = x)))*
+
+where x is the number of the correct sheet.
+
+## Input
+
+```{r Input data}
+#Change the tumour name here
+tumour_name <- "LU035"
+
+#Give the FULL path to the Legendplex file
+file_path <- "~/Documents/Other Experiments/Legendplex/LP050_Final overview.xlsx"
+
+#In which directory should the output be stored?
+output_dir <- "~/Documents/Other Experiments/Legendplex/"
+```
+
+## Main function
+
+If you have run this code block once, then you do not need to run it again and can just go to the 'Output' section directly (although running it again will not change anything)
+
+```{r Main function: just run and do not change anything}
+#function is defined here
+analyze_legendplex <- function(tumour_name, file_path, n_conditions, batch_mode = F){
+  suppressMessages(require(readxl))
+  suppressMessages(require(xlsx))
+  #read in the file
+  suppressMessages(file <- as.data.frame(read_excel(file_path, sheet = 1)))
+  reference_type = "Default"
+  
+  #failsafe for incorrect column names (example is LP056)
+  if(ncol(file) != 31){
+    if(ncol(file) == 30){ #this is to handle raw Legendplex files: identify the correct columns and change colnames
+      match_columns <- data.frame(old_names = c("Plate 1", "...2", "...3", "Condition", "Well", "IL-8 (A4)", "IP-10 (A5)", "Eotaxin (A6)",
+                                                "TARC (A7)", "MCP-1 (A8)", "RANTES (A10)", "MIP-1α (B2)", "MIG (B3)", "ENA-78 (B4)",
+                                                "MIP-3α (B5)", "GROα (B6)", "I-TAC (B7)", "MIP-1β (B9)", "IL-5 (A4)", "IL-13 (A5)", "IL-2 (A6)",
+                                                "IL-6 (A7)", "IL-9 (A8)", "IL-10 (A10)", "IFN-γ (B2)", "TNF-α (B3)", "IL-17A (B4)", "IL-17F (B5)",
+                                                "IL-4 (B6)", "IL-22 (B9)"),
+                                  new_names = c("plate", "row", "column", "sample", "file", "IL-8", "CXCL10","CCL11","CCL17",
+                                                "CCL2","CCL5","CCL3", "CXCL9","CXCL5","CCL20","CXCL1","CXCL11","CCL4","IL-5","IL-13",
+                                                "IL-2","IL-6","IL-9","IL-10","IFN-γ", "TNF-α","IL-17A","IL-17F","IL-4","IL-22"))
+      
+    column_names <- colnames(file)
+    match_columns <- match_columns[match(match_columns$old_names, column_names),] #order correctly
+    colnames(file) <- match_columns$new_names
+    numeric_columns <- colnames(file)[6:30]
+    suppressWarnings(file[, numeric_columns] <- lapply(numeric_columns, function(x) as.numeric(file[[x]]))) #convert cytokine values to numeric
+      
+      
+    } else if(ncol(file) == 27 & "Reference unstim PBMC" %in% file[,1]){ #failsafe for experiments that have a PBMC reference: example is LP033
+      colnames(file)[1:2] <- c("sample","well")
+      colnames(file)[colnames(file) == "IFNg"] <- "IFN-γ"
+      colnames(file)[colnames(file) == "TNFa"] <- "TNF-α"
+      reference_type = "PBMC"
+      
+    } #failsafe if information is not on the first sheet: example is LP033
+   else if(!(all(c("IL-10", "IFN-γ", "CXCL10", "CCL5", "CCL17", "CXCL5", "CXCL1", "CXCL11", "CXCL9", "CCL4", "CCL20") %in% colnames(file)))){
+    suppressMessages(file <- as.data.frame(read_excel(file_path, sheet = 2)))
+    match_columns <- data.frame(old_names = c("...1", "...2", "...3", "IL-2", "IL-4", "IL-10", "IL-6", "IL-17A", "TNF-a", "sFas", "sFasL", "IFN-g", "Granzyme A", "Granzyme B", "Perforin","Granulysin", "...17", "CCL11", "IL-8", "CXCL10", "CCL2", "CCL5", "CCL17", "CXCL5", "CXCL1", "CXCL11", "CXCL9", "CCL3", "CCL4", "CCL20"),
+                                  new_names = c("well", "column", "sample", "IL-2", "IL-4", "IL-10", "IL-6", "IL-17A", "TNF-α", "sFas", "sFasL", "IFN-γ", "Granzyme A", "Granzyme B", "Perforin","Granulysin", "17", "CCL11", "IL-8", "CXCL10", "CCL2", "CCL5", "CCL17", "CXCL5", "CXCL1", "CXCL11", "CXCL9", "CCL3", "CCL4", "CCL20"))
+      
+    column_names <- colnames(file)
+    match_columns <- match_columns[match(match_columns$old_names, column_names),] #order correctly
+    colnames(file) <- match_columns$new_names
+    file <- file[,colnames(file) != "17"]
+    file <- file[-c(1),]
+  }else{
+      stop(paste0("The number of columns seems to be incorrect. There should be 30 or 31 columns (depending on the type of input). These are: ", "experiment ", "well ",
+                  "sample ", "IL-5 ", "IL-13 ", "IL-2 ", "IL-6 ", "IL-9 ", "IL-10 ", "IFN-γ ", "TNF-α ",
+                  "IL-17A ", "IL-17F ", "IL-4 ", "IL-22 ", "IL-8 ", "CXCL10 ", "CCL11 ", "CCL17 ", "CCL2 ", "CCL5 ", "CCL3 ",
+                  "CXCL9 ", "CXCL5 ", "CCL20 ", "CXCL1 ", "CXCL11 ", "CCL4 ", "column_29 ", "column_30 ", "bead_info "))
+    }
+    
+  }
+  
+
+  #set column names
+  if(ncol(file) == 31){
+    colnames(file) <- c("experiment", "well", "sample", "IL-5", "IL-13", "IL-2", "IL-6", "IL-9", "IL-10", "IFN-γ", "TNF-α",
+                      "IL-17A", "IL-17F", "IL-4", "IL-22", "IL-8", "CXCL10", "CCL11", "CCL17", "CCL2", "CCL5", "CCL3",
+                      "CXCL9", "CXCL5", "CCL20", "CXCL1", "CXCL11", "CCL4", "column_29", "column_30", "bead_info")
+  }
+  
+  colnames(file)[colnames(file) == "IFNg|IFN-g"] <- "IFN-γ"
+  colnames(file)[colnames(file) == "TNFa|TNF-a"] <- "TNF-α"
+  
+  #set reference type
+  if("Reference unstim PBMC" %in% file$sample & !("Standard 0pg/ml" %in% file$sample)){
+    reference_type = "PBMC"
+  }
+  
+  #failsafe if tumour cannot be found:
+  if(nrow(file[grepl(tumour_name, file$sample),]) == 0){
+    stop("Cannot find that tumour in the given file.")
+  }
+  
+  #failsafe if PDTF cytokines are missing
+  if(!(all(c("IL-10", "IFN-γ", "CXCL10", "CCL5", "CCL17", "CXCL5", "CXCL1", "CXCL11", "CXCL9", "CCL4", "CCL20") %in% colnames(file)))){
+    missing_col <- colnames(file)[!(c("IL-10", "IFN-γ", "CXCL10", "CCL5", "CCL17", "CXCL5", "CXCL1", "CXCL11", "CXCL9", "CCL4", "CCL20") %in% colnames(file))]
+    stop(paste0("Error: missing the following cytokines: ", missing_col))
+  }
+  
+  #check if number of conditions is 2:
+  if(n_conditions != 2){
+    stop("Function is not yet optimised for more than 2 conditions.")
+  }
+  
+  #Grab the samples that correspond to the tumour name
+  sample <- file[grepl(tumour_name, file$sample),]
+  
+  if(batch_mode == F){
+    print(paste0("Results for tumour ", tumour_name))
+  print(paste0(nrow(sample), " samples were found for that tumour."))
+  }
+  
+  #Split into unstim and aPD1
+  unstim <- sample[grepl("unstim", sample$sample, ignore.case = T),]
+  rownames(unstim) <- unstim$sample
+  unstim$sample <- NULL
+  unstim <- unstim[,!(colnames(unstim) %in% c("plate", "row", "column", "file", "experiment", "well", "column_29", "column_30", "bead_info"))]
+  
+  PD1 <- sample[grepl("aPD1", sample$sample, ignore.case = T),]
+  rownames(PD1) <- PD1$sample
+  PD1$sample <- NULL
+  PD1 <- PD1[,!(colnames(PD1) %in% c("plate", "row", "column", "file", "experiment", "well", "column_29", "column_30", "bead_info"))]
+  
+  #get the blanco values
+  if(reference_type == "Default"){
+    blank <- file[grepl("Standard 0pg/ml", file$sample, ignore.case = T),]
+  blank <- blank[,!(colnames(blank) %in% c("plate", "row", "column", "file", "sample", "experiment", "well", "column_29", "column_30", "bead_info"))]
+  
+  #average the values
+  blank_avg <- colMeans(blank)
+  
+  } else if (reference_type == "PBMC"){ #skip correction as PBMC values will be much different
+    blank_avg <- rep(x=0, times = (ncol(unstim)))
+    print("Warning: as only a PBMC reference was found, values will not be corrected")
+    
+  }
+  
+  #save uncorrected values
+  uncorrected <- rbind(unstim, PD1, blank_avg)
+  rownames(uncorrected)[length(rownames(uncorrected))] <- "Blank average"
+  
+  #correct for blancos in raw values
+  unstim <- sweep(unstim, 2, blank_avg, "-")
+  PD1 <- sweep(PD1, 2, blank_avg, "-")
+  
+  #set all negative values to zero
+  unstim[unstim < 0] <- 0
+  PD1[PD1 < 0] <- 0
+  
+  #calculate averages for stim and unstim
+  unstim_avg <- colMeans(unstim)
+  PD1_avg <- colMeans(PD1)
+  
+  #calculate the PD1 delta (PD1 - unstim average)
+  PD1_delta <-  sweep(PD1, 2, unstim_avg, "-")
+  
+  #calculate unstim deltas (unstim - unstim average)
+  unstim_delta <- sweep(unstim, 2, unstim_avg, "-")
+  
+  #calculate PDTF scores
+  PDTF_matrix_PD1 <- PD1_delta[,c("IL-10", "IFN-γ", "CXCL10", "CCL5", "CCL17", "CXCL5", "CXCL1", "CXCL11", "CXCL9", "CCL4", "CCL20")]
+  PDTF_matrix_PD1[,1] <- ifelse(PDTF_matrix_PD1[,1] > 2.052, yes = 1, no = 0)
+  PDTF_matrix_PD1[,2] <- ifelse(PDTF_matrix_PD1[,2] > 2.622, yes = 2, no = 0)
+  PDTF_matrix_PD1[,3] <- ifelse(PDTF_matrix_PD1[,3] > 41.67, yes = 2, no = 0)
+  PDTF_matrix_PD1[,4] <- ifelse(PDTF_matrix_PD1[,4] > 3.702, yes = 1, no = 0)
+  PDTF_matrix_PD1[,5] <- ifelse(PDTF_matrix_PD1[,5] > 0.5597, yes = 2, no = 0)
+  PDTF_matrix_PD1[,6] <- ifelse(PDTF_matrix_PD1[,6] > 395.3, yes = 1, no = 0)
+  PDTF_matrix_PD1[,7] <- ifelse(PDTF_matrix_PD1[,7] > 482, yes = 2, no = 0)
+  PDTF_matrix_PD1[,8] <- ifelse(PDTF_matrix_PD1[,8] > 0.3441, yes = 1, no = 0)
+  PDTF_matrix_PD1[,9] <- ifelse(PDTF_matrix_PD1[,9] > 18.82, yes = 1, no = 0)
+  PDTF_matrix_PD1[,10] <- ifelse(PDTF_matrix_PD1[,10] > 2.512, yes = 1, no = 0)
+  PDTF_matrix_PD1[,11] <- ifelse(PDTF_matrix_PD1[,11] > 6.611, yes = 1, no = 0)
+  
+  #calculate the cumulative score, percentage and final responder status
+  PDTF_matrix_PD1$total_score <- rowSums(PDTF_matrix_PD1)
+  PDTF_matrix_PD1$percentage <- (PDTF_matrix_PD1$total_score/15)*100
+  
+  PDTF_matrix_PD1$PDTF_response <- ifelse(PDTF_matrix_PD1$percentage >= 40, yes = "PDTF-R", no = "PDTF-NR")
+  PDTF_matrix_PD1$PDTF_response[PDTF_matrix_PD1$percentage >= 30 & PDTF_matrix_PD1$PDTF_response == "PDTF-NR"] <- "PDTF-BR"
+  
+  #calculate PDTF scores at baseline
+  PDTF_matrix_unstim <- unstim_delta[,c("IL-10", "IFN-γ", "CXCL10", "CCL5", "CCL17", "CXCL5", "CXCL1", "CXCL11", "CXCL9", "CCL4", "CCL20")]
+  PDTF_matrix_unstim[,1] <- ifelse(PDTF_matrix_unstim[,1] > 2.052, yes = 1, no = 0)
+  PDTF_matrix_unstim[,2] <- ifelse(PDTF_matrix_unstim[,2] > 2.622, yes = 2, no = 0)
+  PDTF_matrix_unstim[,3] <- ifelse(PDTF_matrix_unstim[,3] > 41.67, yes = 2, no = 0)
+  PDTF_matrix_unstim[,4] <- ifelse(PDTF_matrix_unstim[,4] > 3.702, yes = 1, no = 0)
+  PDTF_matrix_unstim[,5] <- ifelse(PDTF_matrix_unstim[,5] > 0.5597, yes = 2, no = 0)
+  PDTF_matrix_unstim[,6] <- ifelse(PDTF_matrix_unstim[,6] > 395.3, yes = 1, no = 0)
+  PDTF_matrix_unstim[,7] <- ifelse(PDTF_matrix_unstim[,7] > 482, yes = 2, no = 0)
+  PDTF_matrix_unstim[,8] <- ifelse(PDTF_matrix_unstim[,8] > 0.3441, yes = 1, no = 0)
+  PDTF_matrix_unstim[,9] <- ifelse(PDTF_matrix_unstim[,9] > 18.82, yes = 1, no = 0)
+  PDTF_matrix_unstim[,10] <- ifelse(PDTF_matrix_unstim[,10] > 2.512, yes = 1, no = 0)
+  PDTF_matrix_unstim[,11] <- ifelse(PDTF_matrix_unstim[,11] > 6.611, yes = 1, no = 0)
+  
+  #calculate the cumulative score, percentage and final responder status at baseline
+  PDTF_matrix_unstim$total_score <- rowSums(PDTF_matrix_unstim)
+  PDTF_matrix_unstim$percentage <- (PDTF_matrix_unstim$total_score/15)*100
+  
+  PDTF_matrix_unstim$PDTF_response <- ifelse(PDTF_matrix_unstim$percentage >= 40, yes = "PDTF-R", no = "PDTF-NR")
+  PDTF_matrix_unstim$PDTF_response[PDTF_matrix_unstim$percentage >= 30 & PDTF_matrix_unstim$PDTF_response == "PDTF-NR"] <- "PDTF-BR"
+  
+  
+  #calculate overall deltas
+  overall_delta <- PD1_avg - unstim_avg
+  
+  #only keep cytokines we need
+  responder_delta <- overall_delta[names(overall_delta) %in% c("IL-10", "IFN-γ", "CXCL10", "CCL5", "CCL17", "CXCL5", "CXCL1", "CXCL11", "CXCL9", "CCL4", "CCL20")]
+  #correct order
+  responder_delta <- responder_delta[order(factor(names(responder_delta), levels = c("IL-10", "IFN-γ", "CXCL10", "CCL5", "CCL17", "CXCL5", "CXCL1", "CXCL11", "CXCL9", "CCL4", "CCL20")))]
+  
+  #calculate overall responder scores
+  responder_delta[1] <- ifelse(responder_delta[1] > 2.052, yes = 1, no = 0)
+  responder_delta[2] <- ifelse(responder_delta[2] > 2.622, yes = 2, no = 0)
+  responder_delta[3] <- ifelse(responder_delta[3] > 41.67, yes = 2, no = 0)
+  responder_delta[4] <- ifelse(responder_delta[4] > 3.702, yes = 1, no = 0)
+  responder_delta[5] <- ifelse(responder_delta[5] > 0.5597, yes = 2, no = 0)
+  responder_delta[6] <- ifelse(responder_delta[6] > 395.3, yes = 1, no = 0)
+  responder_delta[7] <- ifelse(responder_delta[7] > 482, yes = 2, no = 0)
+  responder_delta[8] <- ifelse(responder_delta[8] > 0.3441, yes = 1, no = 0)
+  responder_delta[9] <- ifelse(responder_delta[9] > 18.82, yes = 1, no = 0)
+  responder_delta[10] <- ifelse(responder_delta[10] > 2.512, yes = 1, no = 0)
+  responder_delta[11] <- ifelse(responder_delta[11] > 6.611, yes = 1, no = 0)
+  
+  #Sum the scores, calculate percentages and give overall responder status
+  responder <- ((sum(responder_delta))/15)*100
+  
+  if(responder >= 40){
+    responder_output <- "PDTF-R"
+  } else if(responder >= 30){
+    responder_output <- "PDTF-BR"
+  } else{
+    responder_output <- "PDTF-NR"
+  }
+  
+  responder <- round(responder, 1)
+  
+  #return table with corrected cytokine values
+  corrected_values <- rbind(unstim,PD1,unstim_avg,PD1_avg)
+  rownames(corrected_values)[length(rownames(corrected_values))-1] <- "unstim average"
+  rownames(corrected_values)[length(rownames(corrected_values))] <- "aPD1 average"
+  
+  #Format deltas
+  deltas <- rbind(unstim_delta, PD1_delta,overall_delta)
+  rownames(deltas)[length(rownames(deltas))] <- "overall delta"
+  
+  #show responder status for individual fragments
+  PDTF_matrix_full <- rbind(PDTF_matrix_unstim, PDTF_matrix_PD1)
+  fragment_response <- data.frame(fragment = rownames(PDTF_matrix_full), response= PDTF_matrix_full$PDTF_response, percentage = PDTF_matrix_full$percentage)
+  fragment_response$percentage <- round(fragment_response$percentage, 1)
+  responder_total <- c(as.character(responder_delta), sum(responder_delta), as.character(responder), responder_output)
+  PDTF_matrix_full <- rbind(PDTF_matrix_full, responder_total)
+  rownames(PDTF_matrix_full)[length(rownames(PDTF_matrix_full))] <- "Overall"
+  
+  #Produce output list:
+  output <- list(uncorrected,corrected_values,deltas,PDTF_matrix_full)
+  names(output) <- c("uncorrected values","corrected values","deltas","PDTF scores")
+  
+  #Give output report:
+  if(batch_mode == F){
+    print("The fragments were classified as follows:")
+  print(fragment_response)
+  }
+  
+  print(paste0(tumour_name, " was overall classified as: ", responder_output, " (", responder, "%)"))
+  
+  if(batch_mode == F){
+    print("All values that were used for calculations can be found in the output of this function.")
+  }
+  
+  return(output)
+  
+}
+```
+
+## Output
+
+```{r Run the function, paged.print=FALSE}
+#use the function, no changes are needed
+output <- analyze_legendplex(file_path = file_path, tumour_name = tumour_name, n_conditions = 2)
+```
+
+```{r Heatmap}
+#Generate a heatmap of delta's, normalised by the average expression in unstim
+library(pheatmap)
+norm_mat <- output$deltas #get the delta values
+
+#get the average expression in unstim
+averages <- output$`corrected values`
+averages <- averages[c("unstim average"),]
+averages <- unlist(as.numeric(averages))
+averages[averages == 0] <- 1 #prevent division by zero
+
+
+#normalize deltas
+norm_mat <- sweep(norm_mat, 2, averages, "/")
+norm_mat <- t(norm_mat)
+
+norm_mat <- norm_mat[,colnames(norm_mat) != "overall delta"]
+
+#grab and format PDTF status
+PDTF_status <- as.data.frame(output$`PDTF scores`[,14])
+colnames(PDTF_status) <- "PDTF_status"
+rownames(PDTF_status) <- rownames(output$`PDTF scores`)
+PDTF_status$sample <- rownames(PDTF_status)
+PDTF_status <- as.data.frame(PDTF_status[rownames(PDTF_status) != "Overall",])
+PDTF_status$sample <- NULL
+PDTF_status$PDTF_status <- gsub("-", "_", PDTF_status$PDTF_status)
+
+#set colours
+cols <- list(PDTF_status = c(PDTF_NR = "grey", PDTF_R = "lightgreen", PDTF_BR = "violet"))
+
+#heatmap
+heatmap <- suppressWarnings(pheatmap(norm_mat, annotation_col = PDTF_status, annotation_colors = cols)) #all values normalised by unstim average
+```
+
+```{r Store the result}
+#An excel file with the result (named the same as your tumour name) will be written to your home directory (or any other directory if you change the filename)
+
+write.xlsx(output[[1]], file=paste0(output_dir,tumour_name,".xlsx"), sheetName=names(output)[[1]], row.names=T)
+write.xlsx(output[[2]], file=paste0(output_dir,tumour_name,".xlsx"), sheetName=names(output)[[2]], append=TRUE, row.names=T)
+write.xlsx(output[[3]], file=paste0(output_dir,tumour_name,".xlsx"), sheetName=names(output)[[3]], append=TRUE, row.names=T)
+write.xlsx(output[[4]], file=paste0(output_dir,tumour_name,".xlsx"), sheetName=names(output)[[4]], append=TRUE, row.names=T)
+```
+
+## Batch input mode
+
+If you want to analyse multiple samples at a time (given that they appear in the same Legendplex file) then you can use this code chunk. It will not show PDTF status per fragment, only per tumour. The results are stored in the same way as the analysis per individual tumour above.
+
+RUN THE 'Main function' SECTION BEFORE PROCEEDING
+
+```{r Batch input}
+#Change the tumour names here
+tumour_name <- c("LU035","LU070","LU017","LU021")
+
+#Give the FULL path to the Legendplex file, this file needs to contain all tumours entered above
+file_path <- "~/Documents/Other Experiments/Legendplex/20220317-LP033-LR-SB/Analysis/Final overview LP033.xlsx"
+
+#In which directory should the output be stored?
+output_dir <- "~/Documents/Other Experiments/Legendplex/20220317-LP033-LR-SB/"
+```
+
+```{r Run function}
+#No changes needed, just run as is
+for(i in tumour_name){
+  output <- analyze_legendplex(tumour_name = i, file_path = file_path, n_conditions = 2, batch_mode = T)
+  
+  write.xlsx(output[[1]], file=paste0(output_dir,i,".xlsx"), sheetName=names(output)[[1]], row.names=T)
+write.xlsx(output[[2]], file=paste0(output_dir,i,".xlsx"), sheetName=names(output)[[2]], append=TRUE, row.names=T)
+write.xlsx(output[[3]], file=paste0(output_dir,i,".xlsx"), sheetName=names(output)[[3]], append=TRUE, row.names=T)
+write.xlsx(output[[4]], file=paste0(output_dir,i,".xlsx"), sheetName=names(output)[[4]], append=TRUE, row.names=T)
+  
+}
+```
