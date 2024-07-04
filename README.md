@@ -19,5 +19,6 @@ _Functions.R_: A master file containing several, more complex, functions that we
 
 
 If there are any questions regarding the scripts included in this project, place them in the Discussion page for this GitHub repository.
+Happy coding!
 
 Sidney
