@@ -1,0 +1,477 @@
+---
+title: "FlowJo from SLICE data"
+author: "Sidney van der Zande"
+date: "`08-07-2024`"
+output: html_document
+---
+
+# Information
+
+This script is used to analyse the FlowJo data generated in the SLICE experiments, which are a part of setting up the patient-derived tissue slice (PDTS) platform. It takes as input the Excel files exported from each individual FlowJo experiment.
+
+```{r Load libraries}
+#Load libraries
+library(readxl)
+library(stringr)
+library(dplyr)
+library(ggplot2)
+library(tidyr)
+library(data.table)
+library(ggsignif)
+library(cowplot)
+library(pals)
+```
+
+# Generate data
+
+```{r Read in data}
+#read in data and add experiment number
+flow_file_SLICE004 <- read_excel("~/Documents/Experiments/SLICE/SLICE004_RE181_slice_culture_24h_48h_22042024/SLICE004.xls")
+flow_file_SLICE004$experiment <- "SLICE004"
+flow_file_SLICE004$Name <- gsub("RE181 unstim 0h", "Fragment unstim 0h", flow_file_SLICE004$Name)
+
+flow_file_SLICE005 <- read_excel("~/Documents/Experiments/SLICE/SLICE005_RE186_72h_03052024/SLICE005.xls")
+flow_file_SLICE005$experiment <- "SLICE005"
+
+flow_file_SLICE006 <- read_excel("~/Documents/Experiments/SLICE/SLICE006_RE187_24h_48h_culture_06052024/SLICE006.xls")
+flow_file_SLICE006$experiment <- "SLICE006"
+flow_file_SLICE006$Depth <- NULL
+
+flow_file_SLICE007 <- read_excel("~/Documents/Experiments/SLICE/SLICE007_cryo_RE187_48h_SZ_NS_22052024/SLICE007.xls")
+flow_file_SLICE007$experiment <- "SLICE007"
+flow_file_SLICE007$Name <- gsub("cryo ", "", flow_file_SLICE007$Name)
+
+flow_file <- rbind(flow_file_SLICE004, flow_file_SLICE005, flow_file_SLICE006,flow_file_SLICE007)
+colnames(flow_file) <- c("Name", "Statistic", "Cells","Experiment")
+```
+
+```{r Keep relevant entries}
+#grab entries for slices and fragments
+fragments <- flow_file[grepl("Fragment|Slice",flow_file$Name, ignore.case = T),]
+fragments$Name <- paste0(fragments$Experiment, "_", fragments$Name) #generate a unique experiment name
+
+#grab the lines referencing the original file without any gating
+fragments_default <- fragments[is.na(fragments$Statistic),]
+
+
+#remove the LD entry
+fragments_default <- fragments_default[!grepl("LD",fragments_default$Name),]
+```
+
+```{r Add gate information to each sample}
+#grab information on gates
+gates <- fragments[!(fragments$Name %in% fragments_default$Name),]
+gates <- gates[grepl("CD45|live", gates$Name, ignore.case = T),] #only grab gates that are the level of live cells or below
+test <- strsplit(gates$Name, "/") #split each gate from the others
+
+
+gate_info <- data.frame()
+
+for (i in seq_along(test)){ #for each individual gate
+  gate_name <- NA
+  sample <- test[[i]][grepl("\\.fcs",test[[i]])] #name of the sample in which the population was found
+  
+  if(tail(test[[i]],1) == "CD3\\+ T cell"){ #add numbers of CD3+ T cells
+    gate_name <- " CD3+ T cell"
+  }
+  if(tail(test[[i]],1) == "T cells_Myeloids"){ #add numbers of CD3+ T cells/Myeloid cells
+    gate_name <- "T cell+Myeloid"
+  }
+  
+  if(any(grepl("CD4\\+|CD8\\+", test[[i]]))){ #if this is a T cell entry, feed into the T cell pipeline
+    result <- test[[i]][grepl("\\+",test[[i]])] #specific population on this line of the file
+    
+    #give the T cell population a name:
+    if(any(grepl("CD4\\+",result))){
+      gate_name <- paste0("CD4+ ", tail(result,1)) #if the T cell is CD4+, name the gate CD4+ CD...+
+    } else if(any(grepl("CD8+",result))){
+      gate_name <- paste0("CD8+ ", tail(result,1)) #if the T cell is CD8+, name the gate CD8+ CD...+
+    } else if(any(grepl("DN", test[[i]], ignore.case = F))){ #check for DN and DP populations in original list as they do not contain a + sign
+      gate_name <- "CD3+ DN"
+    } else if(any(grepl("DP", test[[i]], ignore.case = F))){
+      gate_name <- "CD3+ DP"
+    } else { #if CD3+ is in there but not any of the other gates, then this population is the CD3+ gate before the CD4+/CD8+ split
+      gate_name <- "CD3+"
+    }
+    
+  }
+  
+  if(any(grepl("B cell", test[[i]]))){ #if it is a B cell gate, name the gate as such
+    gate_name <- "B cell"
+  }
+  
+  if(any(grepl("CD45", test[[i]])) & !any(grepl("CD3\\+|B cells|Myeloid", test[[i]]))){ #CD45 gates (live/dead)
+    if(tail(test[[i]],1) == "CD45- total"){
+      gate_name <- "CD45_negative_total"
+    } else if(tail(test[[i]],1) == "CD45- live"){
+      gate_name <- "CD45_negative_live"
+    } else if(tail(test[[i]],1) == "CD45+ total"){
+      gate_name <- "CD45_positive_total"
+    } else if(tail(test[[i]],1) == "CD45+ live"){
+      gate_name <- "CD45_positive_live"
+    } else if(tail(test[[i]],1) == "CD45+"){
+      gate_name <- "CD45+_of_live"
+    }
+  }
+  
+  if(tail(test[[i]], 1) == "Live"){ #Gate for Live cells from Single Cell
+    gate_name <- "live_of_ss"
+  }
+  
+  if(any(grepl("Myeloid", test[[i]]))){ #myeloid gating check
+    if(any(grepl("NK", test[[i]]))){ #if the gate contains NK cells, check for CD16+/CD16-
+      if(tail(test[[i]],1) == "CD16+ NK"){
+        gate_name <- "CD16_positive_NK"
+      } else if(tail(test[[i]],1) == "CD16- NK"){
+        gate_name <- "CD16_negative_NK"
+      }
+    }
+    else if (tail(test[[i]],1) == "CD56- myeloids"){ # if the gate does not contain NK cells, check for myeloid populations
+      gate_name <- "CD56_negative_myeloid"
+    } else if (tail(test[[i]],1) == "CD11c+ CD11b+"){
+      gate_name <- "CD11c+_CD11b+"
+    } else if (tail(test[[i]],1) == "CD14+ monocytes"){
+      gate_name <- "CD14+_monocyte"
+    } else if (tail(test[[i]],1) == "CD14- DC"){
+      gate_name <- "CD14+_DC"
+    } else if (tail(test[[i]],1) == "Myeloid"){
+      gate_name <- "Myeloid"
+    }
+  }
+  
+  #quick check: if the gate is still not identified, skip this entry
+  if(is.na(gate_name)){
+    next
+  }
+    
+    #grab the number of cells and percentages for that population
+    gate_count <- gates[i,"Cells"] #since the list and the dataframe are in the same order, we can just work with the list index for the data frame
+    gate_count <- as.numeric(gate_count)
+    gate_percentage <- gates[i,"Statistic"] #grab the percentage
+   gate_percentage <- as.numeric(gate_percentage)
+    
+
+  #make and export the data
+  gate_row <- data.frame(Name = sample, population = gate_name, percentage = gate_percentage, count = gate_count)
+  
+  gate_info <- rbind(gate_info, gate_row)
+}
+
+#filter out some artefacts
+gate_info$population[gate_info$population == "CD4+ CD4+ T cells"] <- "CD4+"
+gate_info$population[gate_info$population == "CD8+ CD8+ T cells"] <- "CD8+"
+
+#filter out any percentages that exceed 100 (this might be a FlowJo artefact?)
+gate_info <- gate_info[gate_info$percentage <= 100,]
+```
+
+```{r Convert gate information}
+#convert to wide, separately for percentage and count
+gate_percentages <- gate_info[,c("Name","population","percentage")]
+gate_counts <- gate_info[,c("Name","population","count")]
+
+gate_percentages <- spread(gate_percentages, key = population, value = percentage) #convert to wide
+colnames(gate_percentages)[-1] <- paste0(colnames(gate_percentages)[-1], "_percentage") #add that this concerns a percentage to the column name
+gate_counts <- spread(gate_counts, key = population, value = count)
+colnames(gate_counts)[-1] <- paste0(colnames(gate_counts)[-1], "_counts")
+```
+
+```{r Add information on platform, experiment, condition, timepoint, etc.}
+#get the condition and tumour out by strsplit
+data <- strsplit(fragments_default$Name, " ")
+type <- sapply(data,"[[",1) #this results in names like "SLICE004_Fragment" etc.
+type <- gsub("SLICE004_|SLICE005_|SLICE006_|SLICE007_", "", type) #remove the experiment number
+condition <- sapply(data,"[[",2) #the condition is always the second element of the list
+condition <- gsub("T0.fcs","unstim",condition)
+
+matrix <- c() #for SLICE005, experiments were done with and without matrix. Add that information to the data frame
+for(i in seq_along(data)){
+  if(any(grepl("-matrix",data[[i]]))){
+    matrix_i <- "NO"
+  } else{
+    matrix_i <- "YES"
+  }
+  matrix <- c(matrix,matrix_i)
+}
+
+#Also add the timepoint to the data frame
+timepoint <- c()
+for(i in seq_along(data)){
+  if(any(grepl("24h",data[[i]]))){
+    timepoint_i <- "24"
+  } else if(any(grepl("48h",data[[i]]))){
+    timepoint_i <- "48"
+  } else if(any(grepl("72h",data[[i]]))){
+    timepoint_i <- "72"
+  } else{
+    timepoint_i <- "0"
+  }
+  timepoint <- c(timepoint,timepoint_i)
+}
+
+#add the information back to the sample list
+fragments_default$tumour <- NA
+fragments_default$tumour[fragments_default$Experiment == "SLICE004"] <- "RE181"
+fragments_default$tumour[fragments_default$Experiment == "SLICE005"] <- "RE186"
+fragments_default$tumour[fragments_default$Experiment == "SLICE006"] <- "RE187"
+fragments_default$tumour[fragments_default$Experiment == "SLICE007"] <- "RE187"
+
+fragments_default$condition <- condition
+fragments_default$timepoint <- timepoint
+fragments_default$matrix <- matrix
+fragments_default$type <- type
+
+fragments_default$type[grepl("medium", fragments_default$Name)] <- "Slice medium"
+
+#SLICE007 contains experiments involving cryopreserved samples, also add this information to the data frame
+fragments_default$cryopreservation <- "NO"
+fragments_default$cryopreservation[fragments_default$Experiment == "SLICE007"] <- "YES"
+```
+
+```{r Add gate information to the data frame}
+#add gate information
+gate_data_full <- full_join(gate_percentages,gate_counts, by = "Name")
+fragments_default <- left_join(fragments_default, gate_data_full, by = "Name")
+```
+
+```{r Add % of CD45+ for major populations}
+#add CD45% information
+#The median of a marker is always below the population it refers to. Use this:
+expression_file <- data.frame()
+
+for(i in 1:nrow(flow_file)){
+  if(grepl("Freq", flow_file$Name[[i]])){ #the Freq. stat is there if I added a statistic in FlowJo that calculates the % of CD45
+    
+    #grab median expression value
+    row_stat <- as.numeric(flow_file$Statistic[[i]])
+    
+    #find the row it corresponds to
+    for(j in 1:i){
+      #look in all rows above the entry
+      if(grepl("Fragment|Slice", flow_file$Name[[i-j]], ignore.case = F)){
+        row <- flow_file$Name[[i-j]] #if there is a tumour sample found, couple the value to this sample and exit the loop
+        break
+      } else if (grepl("PBMC", flow_file$Name[[i-j]])) {
+        row <- NA #if there is a PBMC sample found, do not enter a sample and exit the loop
+        break
+      } else {
+        next #if no sample is found on this row, go to the row above it
+      }
+    } 
+    
+    if(is.na(row)){
+      next #if the row is NA, this was a PBMC sample, so do not couple it
+    }
+    
+    #make the data entry
+    row_name <- strsplit(row, "/") #the sample name is the first information in the gate name
+    sample_name <- sapply(row_name, "[[", 1)
+    sample_name <- paste0(flow_file$Experiment[[i]], "_", sample_name)
+    row_name <- sapply(row_name, "[[", length(row_name[[1]]))
+    row_full <- data.frame(Name = sample_name, population = row_name, percent_of_CD45 = row_stat)
+    
+    #append to data.frame
+    expression_file <- rbind(expression_file, row_full)
+  }
+}
+
+#convert to wide and change column names
+CD45_percentages <- spread(expression_file, key = population, value = percent_of_CD45)
+colnames(CD45_percentages)[-1] <- paste0(colnames(CD45_percentages)[-1], "_percentage_of_CD45")
+
+#add information to data frame
+fragments_default$Statistic <- NULL
+fragments_default <- left_join(fragments_default, CD45_percentages, by = "Name")
+```
+
+```{r Calculate percentage of CD3+ T cells for aCD3 condition}
+#for the aCD3 fragment, calculate the percentage of CD3+ population by subtracting Myeloids from the T_cell_Myeloid population
+fragments_default$`CD3+ T cells_percentage_of_CD45`[is.na(fragments_default$`CD3+ T cells_percentage_of_CD45`)] <- fragments_default$`T cells_Myeloids_percentage_of_CD45`[is.na(fragments_default$`CD3+ T cells_percentage_of_CD45`)] - fragments_default$Myeloid_percentage_of_CD45[is.na(fragments_default$`CD3+ T cells_percentage_of_CD45`)]
+```
+
+```{r Convert variables to factors and save data frame}
+#other factor settings
+fragments_default$timepoint <- factor(fragments_default$timepoint, levels = c("0", "24", "48","72"))
+fragments_default$matrix <- as.factor(fragments_default$matrix)
+fragments_default$cryopreservation <- as.factor(fragments_default$cryopreservation)
+fragments_default$type <- as.factor(fragments_default$type)
+fragments_default$condition <- factor(fragments_default$condition, level = c("unstim", "aPD1", "aCD3"))
+
+#save the table
+write.csv(fragments_default, "~/Documents/Analyses/SLICE/data_table.csv")
+```
+
+# Export data and make plots
+
+```{r Read in generated data frame}
+#read in table
+fragments_default <- read.csv("~/Documents/Analyses/SLICE/data_table.csv", check.names = F)
+fragments_default$X <- NULL
+fragments_default[,1] <- NULL
+```
+
+```{r Plot percentage of live cells}
+#plot the number of live cells in each sample
+fragments_default.x <- fragments_default[fragments_default$matrix == "YES" & fragments_default$type != "Slice medium",] #exclude medium samples
+fragments_default.x$category <- paste0(fragments_default.x$Experiment, "_", fragments_default.x$type, "_", fragments_default.x$condition) #make a new column stating the experiment, type (fragment/slice) and the condition
+cols <- pals::alphabet2(n = length(unique(fragments_default.x$category))) #select colours for plotting
+names(cols) <- unique(fragments_default.x$category)
+
+#plot the amount of live cells
+ggplot(fragments_default.x,aes(x=timepoint,y=live_of_ss_percentage,col=category)) +
+  ylab("percentage live cells of single cells") + xlab("timepoint") + geom_point(aes(col=category), shape=16, size=3)  +
+  geom_line(data = fragments_default.x, aes(group=category), na.rm=T) + theme_bw() +scale_colour_manual(values = cols)
+```
+
+```{r Export data to Prism}
+#mass export to prism
+fragments_default.x <- fragments_default.x[fragments_default.x$cryopreservation == "NO",] #do not include samples which have been cryopreserved
+fragments_default.x$type <- factor(fragments_default.x$type, levels = c("Fragment", "Slice"))
+fragments_summarised <- split(fragments_default.x, fragments_default.x$type) #split data frame into fragments and slices
+
+fragments_summarised_final <- list()
+condition <- c("unstim", "aPD1", "aCD3")
+
+for(i in seq_along(fragments_summarised)){ #for each entry in the data frame
+  fragments_summarized_data <- fragments_summarised[[i]] %>%
+    group_by(condition, timepoint) %>% #group on condition (unstim/aPD1/aCD3) and timepoint (0/24/48/72)
+    summarise(count = n(), across(where(is.numeric), \(x) mean(x, na.rm = TRUE))) #take colMeans in all numeric columns in each group (average over all experiments)
+  
+  fragments_summarized_data[fragments_summarized_data == "NaN"] <- NA
+  
+  fragments_summarized_data <- fragments_summarized_data[order(match(fragments_summarized_data$condition, condition), fragments_summarized_data$timepoint),] #order based on condition and timepoint
+  fragments_summarized_data$condition <- factor(fragments_summarized_data$condition, levels = condition)
+  
+  fragments_summarised_final[[length(fragments_summarised_final) + 1]] <- fragments_summarized_data #save data to list
+  names(fragments_summarised_final)[[length(fragments_summarised_final)]] <- names(fragments_summarised)[[i]]
+}
+
+
+#convert each summarised value to wide
+for(i in seq_along(fragments_summarised_final)){
+  data <- as.data.frame(fragments_summarised_final[[i]])
+  for (j in 1:ncol(fragments_summarised_final[[i]])){ #for each column (gate)
+    if(is.numeric(data[,j])){ #if the clumn is numeric (contains a statistic)
+      colname <- colnames(data)[[j]] #take the name of the statistic you are trying to convert
+      long <- data[,c("condition","timepoint", colname)]
+      colnames(long) <- c("condition","timepoint", "value")
+      wide <- reshape(long, idvar = "timepoint", timevar = "condition", direction = "wide") #convert from long format to wide
+      
+      #rename columns
+      colnames(wide)[colnames(wide) == "value.unstim"] <- "unstim"
+      colnames(wide)[colnames(wide) == "value.aPD1"] <- "aPD1"
+      colnames(wide)[colnames(wide) == "value.aCD3"] <- "aCD3"
+
+      file_location <- paste0("~/Documents/Analyses/SLICE/mass_data_export/",names(fragments_summarised_final)[[i]],"_",colname,".csv") #export to csv
+      
+      write.csv(wide,file_location)
+    }
+  }
+}
+```
+
+```{r Plot cell compositions}
+#plot the composition of each sample
+#only select columns containing  percentage of CD45
+small <- fragments_default[,c("Experiment", "condition", "timepoint","matrix","type","B cells_percentage_of_CD45","CD4+ T cells_percentage_of_CD45",
+                              "CD8+ T cells_percentage_of_CD45","CD56+ NK cells_percentage_of_CD45","CD56- myeloids_percentage_of_CD45")]
+small <- small[small$type != "Slice medium",] #exclude medium samples
+
+small$composition <- rowSums(small[,6:10]) #calculate the total of all % of CD45 columns
+
+colnames(small) <- c("Experiment", "condition", "timepoint","matrix","type","B cell","CD4+ T cell",
+                     "CD8+ T cell","CD56+ NK cell","CD56- Myeloid", "composition") #rename columns
+
+small <- small[small$composition != 0,] #remove entries without CD45+ cells
+small$Other <- 100-small$composition #all columns should add up to 100% (of CD45+), if not, the missing percentages go into the 'other'. category
+small$Other[small$Other < 0] <- 0 #if the columns add up to more than 100%, the 'other' category gets ste to zero
+small$composition <- NULL
+
+#export to prism
+small_prism <- small[small$matrix == "YES",] #only include samples with a matrix
+small_prism$category <- paste0(small_prism$Experiment, "_", small_prism$condition, "_", small_prism$timepoint)
+
+#split into fragment and slice
+small_prism_frag <- small_prism[small_prism$type == "Fragment",]
+small_prism_frag[,c("Experiment","condition", "timepoint","matrix","type")] <- NULL #remove columns
+rownames(small_prism_frag) <- small_prism_frag$category
+
+write.csv(small_prism_frag, "~/Documents/Analyses/SLICE/Fragment_composition.csv") #save as csv
+
+#repeat for slices
+small_prism_slice <- small_prism[small_prism$type == "Slice",]
+small_prism_slice[,c("Experiment","condition", "timepoint","matrix","type")] <- NULL
+rownames(small_prism_slice) <- small_prism_slice$category
+write.csv(small_prism_slice, "~/Documents/Analyses/SLICE/Slice_composition.csv")
+```
+
+```{r Plot influence of matrigel usage}
+#investigate effects of matrigel
+matrix <- fragments_default[fragments_default$Experiment == "SLICE005",] #only keep samples containing medium
+matrix_medium <- matrix[matrix$type == "Slice medium",]
+
+#export to prism
+prism <- matrix_medium[,c("condition", "matrix", "CD45_positive_total_counts", "CD45_negative_total_counts")]
+prism$matrix <- ifelse(prism$matrix == "YES", "+", "-") #convert YES/NO to +/-
+prism$ID <- paste0(prism$condition, " ", prism$matrix) #add to the sample name
+prism <- prism[,3:5]
+rownames(prism) <- prism$ID
+prism$ID <- NULL
+
+write.xlsx(prism, "~/Documents/Analyses/SLICE/matrix_data.xlsx", rowNames = T) #export as excel file
+```
+
+```{r Plot expression of T cell markers at 48 hours}
+#For barchart showing T cell markers at 48 hours:
+fragments_48 <- fragments_default[fragments_default$timepoint == 48,] #only keep the 48h timepoint
+fragments_48 <- fragments_48[fragments_48$cryopreservation == "NO",] #only keep non-cryopreserved samples
+fragments_48$condition <- factor(fragments_48$condition, levels = c("unstim", "aPD1", "aCD3"))
+fragments_48 <- fragments_48[order(fragments_48$type, fragments_48$condition, fragments_48$Experiment),] #order based on type, condition and experiment
+fragments_48$ID <- paste0(fragments_48$type, "_", fragments_48$condition)
+
+#investigate several markers at 48 hours
+CD4_CD39_CD137 <- fragments_48[,c("ID","Experiment","CD4+ CD39+ CD137+_percentage")]
+CD4_CD39_CD137 <- as.data.frame(t(CD4_CD39_CD137))
+
+CD8_CD39_CD137 <- fragments_48[,c("ID","Experiment","CD8+ CD39+ CD137+_percentage")]
+CD8_CD39_CD137 <- as.data.frame(t(CD8_CD39_CD137))
+
+CD4_CD25 <- fragments_48[,c("ID","Experiment","CD4+ CD25+_percentage")]
+CD4_CD25 <- as.data.frame(t(CD4_CD25))
+
+CD8_CD25 <- fragments_48[,c("ID","Experiment","CD8+ CD25+_percentage")]
+CD8_CD25 <- as.data.frame(t(CD8_CD25))
+
+CD4_CD137 <- fragments_48[,c("ID","Experiment","CD4+ CD137+_percentage")]
+CD4_CD137 <- as.data.frame(t(CD4_CD137))
+
+CD8_CD137 <- fragments_48[,c("ID","Experiment","CD8+ CD137+_percentage")]
+CD8_CD137 <- as.data.frame(t(CD8_CD137))
+
+myeloid <- fragments_48[,c("ID","Experiment","Myeloid_percentage")]
+myeloid <- as.data.frame(t(myeloid))
+```
+
+```{r Plot cell composition of cryopreserved samples}
+#Plot the cell composition of the cryopreserved samples
+test <- fragments_default[fragments_default$Experiment == "SLICE007",] #select the experiment which contains cryopreserved samples
+test_small <- test[,c("Experiment", "condition", "timepoint","matrix","type","B cells_percentage_of_CD45","CD4+ T cells_percentage_of_CD45",
+                      "CD8+ T cells_percentage_of_CD45","CD56+ NK cells_percentage_of_CD45","CD56- myeloids_percentage_of_CD45")] #select columns containing % of CD45+
+
+#reorder
+test_small$condition <- factor(test_small$condition, levels = c("unstim", "aPD1", "aCD3"))
+test_small <- test_small[order(test_small$type, test_small$condition, test_small$timepoint),]
+
+#calculate the 'other' category
+test_small$composition <- rowSums(test_small[,6:10])
+
+colnames(test_small) <- c("Experiment", "condition", "timepoint","matrix","type","B cell","CD4+ T cell",
+                     "CD8+ T cell","CD56+ NK cell","CD56- Myeloid", "composition")
+
+test_small <- test_small[test_small$composition != 0,] #remove entries without CD45+ cells
+test_small$Other <- 100-test_small$composition #all columns should add up to 100% (of CD45+), if not, the missing percentages go into the 'other'. category
+test_small$Other[test_small$Other < 0] <- 0 #if the columns add up to more than 100%, the 'other' category gets ste to zero
+test_small$composition <- NULL
+
+write.xlsx(test_small, "~/Documents/Analyses/SLICE/cryopreservation_cell_fractions.xlsx") #export as Excel file
+```
