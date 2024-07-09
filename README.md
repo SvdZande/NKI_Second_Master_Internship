@@ -7,7 +7,7 @@ The scripts in this repository are defined as follows:
 
 _FlowJo_SLICE.Rmd_: This file contains code to convert FlowJo gating data from all experiment in the PDTS/SLICE project (exported as an Excel file) to a data table containing numbers and percentages of each gated cell population per sample. Furthermore, this file contains scripts for the visualisation and export of this flow cytometry data.
 
-_FlowJo_TLS.R_: This file contains code to convert FlowJo gating data in the PDTF/TLS project (exported as an Excel file) to a data table containing numbers and percentages of each gated cell population per sample. Furthermore, this file contains scripts for the visualisation and export of this flow cytometry data. This script also performs filtering of data based on cell numbers, as well as assigning fragments B cell high/intermediate/low scores. Any analyses involving cellular populations in the TLS project are in this file.
+_FlowJo_TLS.Rmd_: This file contains code to convert FlowJo gating data in the PDTF/TLS project (exported as an Excel file) to a data table containing numbers and percentages of each gated cell population per sample. Furthermore, this file contains scripts for the visualisation and export of this flow cytometry data. This script also performs filtering of data based on cell numbers, as well as assigning fragments B cell high/intermediate/low scores. Any analyses involving cellular populations in the TLS project are in this file.
 
 _Legendplex.Rmd_: This is a general-use Rmd file which can be used to calculate several metrics from Legendplex data: it takes a file containing raw cytokine and chemokine values and calculates corrected values, deltas and PDTF scores and outputs this per tumour individually.
 
