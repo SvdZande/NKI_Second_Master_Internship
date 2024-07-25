@@ -13,7 +13,7 @@ _Legendplex.Rmd_: This is a general-use Rmd file which can be used to calculate 
 
 _Legendplex_from_template.Rmd_: This is an Rmd file to handle Legendplex data from the TLS project specifically. It can perform all functions of the Legendplex.Rmd file, but in addition can also perform normalisation and quality control based on concentrations and MFI.
 
-_legendplex_all_tumours.R_: This file is used to handle all output form the Legendplex_from_template.Rmd script. It is used to calculate z-scores and cumulative scores for many different comparisons, fold-changes, outlier correction and heatmap plotting. Any analysis involving Legendplex data in the TLS project is handled in this file.
+_legendplex_all_tumours_final.Rmd_: This file is used to handle all output form the Legendplex_from_template.Rmd script. It is used to calculate z-scores and cumulative scores for many different comparisons, fold-changes, outlier correction and heatmap plotting. Any analysis involving Legendplex data in the TLS project is handled in this file.
 
 _Functions.R_: A master file containing several, more complex, functions that were designed to aid in the analysis of all data. Other scripts, such as _legendplex_all_tumours.R_, rely on some of the functions specified in this file and will call these in using the source() function from R.
 
